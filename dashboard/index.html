@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SQLGuardian — SQL Server Health Monitor</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0f13; color: #e5e7eb; font-family: 'Inter', -apple-system, sans-serif; }
+    @keyframes ping { 75%,100% { transform: scale(2); opacity: 0; } }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0d0f13; }
+    ::-webkit-scrollbar-thumb { background: #2d3139; border-radius: 3px; }
+    input::placeholder { color: #374151; }
+    input:focus { outline: none; border-color: #8b5cf6 !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useCallback } = React;
+    const API = "";
+
+    const sev = {
+      healthy: { color: "#22d3a0", bg: "rgba(34,211,160,0.08)", label: "Healthy" },
+      warning: { color: "#f59e0b", bg: "rgba(245,158,11,0.08)", label: "Warning" },
+      critical: { color: "#f43f5e", bg: "rgba(244,63,94,0.08)", label: "Critical" },
+      unknown: { color: "#6b7280", bg: "rgba(107,114,128,0.08)", label: "Unknown" },
+    };
+
+    function SevBadge({ level }) {
+      const s = sev[level] || sev.unknown;
+      return (
+        <span style={{
+          background: s.bg, color: s.color, border: `1px solid ${s.color}44`,
+          borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700,
+          letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap",
+        }}>{s.label}</span>
+      );
+    }
+
+    function Pulse({ level }) {
+      const s = sev[level] || sev.unknown;
+      return (
+        <span style={{ position: "relative", display: "inline-flex", width: 10, height: 10, flexShrink: 0 }}>
+          {level !== "healthy" && (
+            <span style={{
+              position: "absolute", inset: 0, borderRadius: "50%", background: s.color,
+              opacity: 0.4, animation: "ping 1.5s cubic-bezier(0,0,0.2,1) infinite",
+            }} />
+          )}
+          <span style={{ position: "absolute", inset: "1px", borderRadius: "50%", background: s.color }} />
+        </span>
+      );
+    }
+
+    function MetricCard({ label, value, unit, severity, sub }) {
+      const s = sev[severity] || sev.unknown;
+      return (
+        <div style={{
+          background: "#111318", border: "1px solid #1e2028", borderRadius: 12,
+          padding: "20px 24px", borderLeft: `3px solid ${s.color}`,
+        }}>
+          <div style={{ fontSize: 11, color: "#6b7280", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, marginBottom: 6 }}>{label}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+            <span style={{ fontSize: 32, fontWeight: 700, color: s.color, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{value ?? "—"}</span>
+            {unit && <span style={{ fontSize: 13, color: "#6b7280" }}>{unit}</span>}
+          </div>
+          {sub && <div style={{ fontSize: 12, color: "#4b5563" }}>{sub}</div>}
+        </div>
+      );
+    }
+
+    function WaitBar({ wait }) {
+      const maxSec = 4000;
+      const pct = Math.min((wait.wait_seconds / maxSec) * 100, 100);
+      const color = pct > 70 ? "#f43f5e" : pct > 40 ? "#f59e0b" : "#22d3a0";
+      return (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+            <span style={{ fontSize: 12, color: "#9ca3af", fontFamily: "monospace" }}>{wait.wait_type}</span>
+            <span style={{ fontSize: 12, color: "#6b7280" }}>{wait.wait_seconds?.toFixed(1)}s · {wait.waiting_tasks_count} tasks</span>
+          </div>
+          <div style={{ height: 4, background: "#1e2028", borderRadius: 2 }}>
+            <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 2, transition: "width 0.6s ease" }} />
+          </div>
+        </div>
+      );
+    }
+
+    function AIPanel() {
+      const [result, setResult] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [mode, setMode] = useState("explain");
+      const [question, setQuestion] = useState("");
+      const [focus, setFocus] = useState("");
+
+      const run = async () => {
+        setLoading(true);
+        setResult(null);
+        try {
+          let res;
+          if (mode === "explain") {
+            res = await fetch(`${API}/ai/explain`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fresh: false }) });
+          } else if (mode === "suggest") {
+            res = await fetch(`${API}/ai/suggest`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_focus: focus || null, fresh: false }) });
+          } else {
+            res = await fetch(`${API}/ai/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }) });
+          }
+          setResult(await res.json());
+        } catch (e) { setResult({ error: e.message }); }
+        setLoading(false);
+      };
+
+      return (
+        <div style={{ background: "#111318", border: "1px solid #1e2028", borderRadius: 12, padding: 24, borderLeft: "3px solid #8b5cf6" }}>
+          <div style={{ marginBottom: 6, fontSize: 11, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>Powered by Llama 3.3-70b · Groq</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+            {[["explain","Explain Incident"],["suggest","Fix It"],["ask","Ask Anything"]].map(([m, label]) => (
+              <button key={m} onClick={() => { setMode(m); setResult(null); }} style={{
+                background: mode === m ? "#8b5cf6" : "transparent",
+                border: `1px solid ${mode === m ? "#8b5cf6" : "#2d3139"}`,
+                color: mode === m ? "#fff" : "#6b7280", borderRadius: 8,
+                padding: "7px 16px", cursor: "pointer", fontSize: 12, fontWeight: 600,
+              }}>{label}</button>
+            ))}
+          </div>
+
+          {mode === "ask" && (
+            <input value={question} onChange={e => setQuestion(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && question.trim() && run()}
+              placeholder="Why is my server slow? Which database is biggest?"
+              style={{ width: "100%", background: "#0d0f13", border: "1px solid #2d3139", borderRadius: 8, padding: "10px 14px", color: "#e5e7eb", fontSize: 13, marginBottom: 12 }} />
+          )}
+          {mode === "suggest" && (
+            <input value={focus} onChange={e => setFocus(e.target.value)}
+              placeholder="Focus on: blocking, disk, backups, failed jobs... (optional)"
+              style={{ width: "100%", background: "#0d0f13", border: "1px solid #2d3139", borderRadius: 8, padding: "10px 14px", color: "#e5e7eb", fontSize: 13, marginBottom: 12 }} />
+          )}
+
+          <button onClick={run} disabled={loading || (mode === "ask" && !question.trim())} style={{
+            background: loading ? "#2d3139" : "linear-gradient(135deg, #8b5cf6, #6366f1)",
+            border: "none", color: "#fff", borderRadius: 8, padding: "10px 24px",
+            cursor: loading ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600,
+          }}>
+            {loading ? "⏳ Analyzing..." : mode === "explain" ? "Analyze Now" : mode === "suggest" ? "Generate Fix Scripts" : "Ask AI"}
+          </button>
+
+          {result && !result.error && (
+            <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+              {mode === "explain" && <>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                  <SevBadge level={result.severity_label} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb", lineHeight: 1.5 }}>{result.headline}</span>
+                </div>
+                <div style={{ background: "#0d0f13", borderRadius: 8, padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>DBA View</div>
+                    <div style={{ fontSize: 13, color: "#d1d5db", lineHeight: 1.7 }}>{result.dba_summary}</div>
+                  </div>
+                  <div style={{ borderTop: "1px solid #1e2028", paddingTop: 12 }}>
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Management View</div>
+                    <div style={{ fontSize: 13, color: "#9ca3af", lineHeight: 1.7 }}>{result.manager_summary}</div>
+                  </div>
+                </div>
+                {result.top_issues?.map((issue, i) => (
+                  <div key={i} style={{
+                    background: "#0d0f13", borderRadius: 8, padding: "12px 16px",
+                    borderLeft: `3px solid ${issue.priority === "high" ? "#f43f5e" : issue.priority === "medium" ? "#f59e0b" : "#22d3a0"}`,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, alignItems: "flex-start", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb" }}>{issue.issue}</span>
+                      <SevBadge level={issue.priority === "high" ? "critical" : issue.priority === "medium" ? "warning" : "healthy"} />
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>{issue.detail}</div>
+                    <div style={{ fontSize: 12, color: "#4b5563", marginTop: 4 }}>{issue.impact}</div>
+                  </div>
+                ))}
+                {result.root_cause && (
+                  <div style={{ background: "rgba(244,63,94,0.05)", border: "1px solid rgba(244,63,94,0.2)", borderRadius: 8, padding: "12px 16px" }}>
+                    <div style={{ fontSize: 11, color: "#f43f5e", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Root Cause</div>
+                    <div style={{ fontSize: 13, color: "#d1d5db" }}>{result.root_cause}</div>
+                  </div>
+                )}
+              </>}
+
+              {mode === "suggest" && <>
+                {result.immediate_actions?.length > 0 && (
+                  <div style={{ background: "rgba(244,63,94,0.05)", border: "1px solid rgba(244,63,94,0.15)", borderRadius: 8, padding: 16 }}>
+                    <div style={{ fontSize: 11, color: "#f43f5e", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Immediate Actions</div>
+                    {result.immediate_actions.map((a, i) => <div key={i} style={{ fontSize: 13, color: "#d1d5db", marginBottom: 4 }}>• {a}</div>)}
+                  </div>
+                )}
+                {result.remediations?.map((r, i) => (
+                  <div key={i} style={{
+                    background: "#0d0f13", borderRadius: 8, padding: 16,
+                    borderLeft: `3px solid ${r.risk_level === "safe" || r.risk_level === "low" ? "#22d3a0" : r.risk_level === "medium" ? "#f59e0b" : "#f43f5e"}`,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb" }}>{r.title}</span>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        {r.requires_approval && <span style={{ fontSize: 11, color: "#f59e0b", background: "rgba(245,158,11,0.1)", padding: "2px 8px", borderRadius: 4, border: "1px solid rgba(245,158,11,0.2)" }}>Needs Approval</span>}
+                        <span style={{ fontSize: 11, color: "#6b7280" }}>Risk: {r.risk_level}</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 12, lineHeight: 1.5 }}>{r.description}</div>
+                    <pre style={{ background: "#070a0e", borderRadius: 6, padding: "12px 14px", fontSize: 12, color: "#22d3a0", overflow: "auto", margin: 0, fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{r.tsql}</pre>
+                    {r.expected_outcome && <div style={{ fontSize: 12, color: "#4b5563", marginTop: 8 }}>→ {r.expected_outcome}</div>}
+                  </div>
+                ))}
+                {result.monitoring_followup && (
+                  <div style={{ background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.15)", borderRadius: 8, padding: 14 }}>
+                    <div style={{ fontSize: 11, color: "#8b5cf6", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>After Applying Fixes</div>
+                    <div style={{ fontSize: 13, color: "#9ca3af" }}>{result.monitoring_followup}</div>
+                  </div>
+                )}
+              </>}
+
+              {mode === "ask" && (
+                <div style={{ background: "#0d0f13", borderRadius: 8, padding: 16 }}>
+                  <div style={{ fontSize: 14, color: "#e5e7eb", lineHeight: 1.7, marginBottom: 12 }}>{result.answer}</div>
+                  {result.supporting_data && <div style={{ fontSize: 12, color: "#6b7280", borderTop: "1px solid #1e2028", paddingTop: 12, lineHeight: 1.6 }}>{result.supporting_data}</div>}
+                  {result.follow_up_suggestion && <div style={{ fontSize: 12, color: "#8b5cf6", marginTop: 10 }}>→ Next: {result.follow_up_suggestion}</div>}
+                </div>
+              )}
+
+              <div style={{ fontSize: 11, color: "#374151" }}>
+                {result.model} · {result.generated_at?.slice(0,19).replace("T"," ")} UTC
+              </div>
+            </div>
+          )}
+          {result?.error && <div style={{ marginTop: 16, fontSize: 13, color: "#f43f5e" }}>Error: {result.error}</div>}
+        </div>
+      );
+    }
+
+    function App() {
+      const [snapshot, setSnapshot] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [lastRefresh, setLastRefresh] = useState(null);
+      const [view, setView] = useState("overview");
+
+      const refresh = useCallback(async () => {
+        try {
+          const res = await fetch(`${API}/health/snapshot`);
+          setSnapshot(await res.json());
+          setLastRefresh(new Date());
+        } catch(e) { console.error(e); }
+        setLoading(false);
+      }, []);
+
+      useEffect(() => {
+        refresh();
+        const t = setInterval(refresh, 30000);
+        return () => clearInterval(t);
+      }, [refresh]);
+
+      const sv = snapshot?.overall_severity || "unknown";
+      const s = sev[sv] || sev.unknown;
+      const server = snapshot?.server_health || {};
+      const blocking = snapshot?.blocking || {};
+      const disk = snapshot?.disk_usage || {};
+      const jobs = snapshot?.agent_jobs || {};
+      const waits = snapshot?.wait_stats?.top_waits || [];
+      const dbs = snapshot?.database_status || {};
+
+      const navItems = [
+        { id: "overview", label: "Overview" },
+        { id: "ai", label: "AI Brain" },
+        { id: "jobs", label: "Agent Jobs" },
+        { id: "databases", label: "Databases" },
+      ];
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#0d0f13" }}>
+          {/* Topbar */}
+          <div style={{
+            borderBottom: "1px solid #1e2028", padding: "0 32px",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            height: 56, position: "sticky", top: 0, background: "#0a0c10", zIndex: 100,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span style={{ fontWeight: 700, fontSize: 14, color: "#fff", letterSpacing: "-0.01em" }}>SQLGuardian</span>
+                <span style={{ fontSize: 10, color: "#4b5563", background: "#1a1d24", padding: "2px 7px", borderRadius: 4, border: "1px solid #2d3139", fontWeight: 600 }}>v1.0</span>
+              </div>
+              <div style={{ width: 1, height: 16, background: "#2d3139" }} />
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Pulse level={sv} />
+                <span style={{ fontSize: 12, color: s.color, fontWeight: 600 }}>{s.label}</span>
+                {snapshot?.server_health?.server_name && (
+                  <span style={{ fontSize: 11, color: "#4b5563" }}>· {snapshot.server_health.server_name}</span>
+                )}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {navItems.map(item => (
+                <button key={item.id} onClick={() => setView(item.id)} style={{
+                  background: view === item.id ? "#1a1d24" : "transparent",
+                  border: `1px solid ${view === item.id ? "#2d3139" : "transparent"}`,
+                  color: view === item.id ? "#e5e7eb" : "#6b7280",
+                  borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 500,
+                }}>{item.label}</button>
+              ))}
+              <div style={{ width: 1, height: 16, background: "#2d3139", margin: "0 4px" }} />
+              <button onClick={refresh} title="Refresh" style={{
+                background: "transparent", border: "1px solid #2d3139", color: "#6b7280",
+                borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12,
+              }}>↻</button>
+              {lastRefresh && <span style={{ fontSize: 11, color: "#374151" }}>{lastRefresh.toLocaleTimeString()}</span>}
+            </div>
+          </div>
+
+          <div style={{ maxWidth: 1280, margin: "0 auto", padding: "32px" }}>
+            {loading && (
+              <div style={{ textAlign: "center", color: "#4b5563", padding: "80px 0" }}>
+                <div style={{ fontSize: 13 }}>Connecting to SQL Server...</div>
+              </div>
+            )}
+
+            {!loading && snapshot && view === "overview" && (
+              <>
+                {/* Status banner */}
+                <div style={{
+                  background: s.bg, border: `1px solid ${s.color}33`, borderRadius: 12,
+                  padding: "14px 24px", marginBottom: 28,
+                  display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <Pulse level={sv} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: s.color }}>
+                      {sv === "healthy" ? "All systems operating normally" : sv === "warning" ? "Attention required on some components" : "Critical issues detected - action needed"}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 11, color: "#4b5563" }}>Auto-refresh every 30s · {snapshot.snapshot_time?.slice(0,19).replace("T"," ")} UTC</span>
+                </div>
+
+                {/* Metrics grid */}
+                <div style={{ marginBottom: 28 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 14 }}>Server Health</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+                    <MetricCard label="SQL CPU" value={server.cpu?.sql_cpu_pct ?? "—"} unit="%" severity={server.cpu?.severity} sub={`System idle: ${server.cpu?.system_idle_pct ?? "—"}%`} />
+                    <MetricCard label="Memory" value={server.memory?.used_pct ?? "—"} unit="%" severity={server.memory?.severity} sub={`${server.memory?.available_mb ? Math.round(server.memory.available_mb/1024)+"GB" : "—"} available`} />
+                    <MetricCard label="Uptime" value={server.uptime_hours ?? "—"} unit="hrs" severity="healthy" sub={`Since ${server.start_time?.slice(0,10) ?? "—"}`} />
+                    <MetricCard label="Blocking" value={blocking.blocked_session_count ?? 0} unit="sessions" severity={blocking.severity} sub={blocking.blocked_session_count > 0 ? `Max wait: ${blocking.max_wait_seconds}s` : "No blocking detected"} />
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 28 }}>
+                  {/* Disk */}
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 14 }}>Disk & Storage</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {(disk.volumes || []).map((v, i) => (
+                        <div key={i} style={{ background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: "16px 20px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                            <span style={{ fontSize: 12, color: "#9ca3af", fontFamily: "monospace" }}>{v.volume_mount_point}</span>
+                            <span style={{ fontSize: 20, fontWeight: 700, color: v.used_pct > 90 ? "#f43f5e" : v.used_pct > 80 ? "#f59e0b" : "#e5e7eb" }}>{v.used_pct}%</span>
+                          </div>
+                          <div style={{ height: 5, background: "#1e2028", borderRadius: 3 }}>
+                            <div style={{ height: "100%", width: `${v.used_pct}%`, borderRadius: 3, background: v.used_pct > 90 ? "#f43f5e" : v.used_pct > 80 ? "#f59e0b" : "#22d3a0", transition: "width 0.5s" }} />
+                          </div>
+                          <div style={{ fontSize: 11, color: "#4b5563", marginTop: 6 }}>{v.used_gb} GB used · {v.available_gb} GB free of {v.total_gb} GB</div>
+                        </div>
+                      ))}
+                      {(!disk.volumes || disk.volumes.length === 0) && (
+                        <div style={{ background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: 20, color: "#4b5563", fontSize: 13 }}>No volume data</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Waits */}
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 14 }}>Top Wait Types</div>
+                    <div style={{ background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: "20px 24px" }}>
+                      {waits.slice(0, 8).map((w, i) => <WaitBar key={i} wait={w} />)}
+                      {waits.length === 0 && <div style={{ fontSize: 13, color: "#4b5563" }}>No wait data</div>}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick AI prompt */}
+                <div style={{ background: "linear-gradient(135deg, rgba(139,92,246,0.08), rgba(99,102,241,0.05))", border: "1px solid rgba(139,92,246,0.2)", borderRadius: 12, padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#c4b5fd", marginBottom: 4 }}>AI Brain Ready</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>Ask the AI to explain incidents, generate fix scripts, or answer any question about your server.</div>
+                  </div>
+                  <button onClick={() => setView("ai")} style={{
+                    background: "linear-gradient(135deg, #8b5cf6, #6366f1)", border: "none",
+                    color: "#fff", borderRadius: 8, padding: "10px 20px", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
+                  }}>Open AI Brain →</button>
+                </div>
+              </>
+            )}
+
+            {!loading && snapshot && view === "ai" && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 16 }}>AI Brain</div>
+                <AIPanel />
+              </div>
+            )}
+
+            {!loading && snapshot && view === "jobs" && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 16 }}>
+                  SQL Agent Jobs · {jobs.total_jobs ?? 0} total · <span style={{ color: jobs.failed_count > 0 ? "#f43f5e" : "#22d3a0" }}>{jobs.failed_count ?? 0} failed</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {(jobs.jobs || []).map((j, i) => (
+                    <div key={i} style={{
+                      background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: "14px 20px",
+                      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+                      borderLeft: `3px solid ${j.last_run_status === "Failed" ? "#f43f5e" : j.last_run_status === "Succeeded" ? "#22d3a0" : "#6b7280"}`,
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb", marginBottom: 2 }}>{j.job_name}</div>
+                        <div style={{ fontSize: 11, color: "#4b5563" }}>{j.last_run_time ? new Date(j.last_run_time).toLocaleString() : "Never run"}</div>
+                        {j.last_run_message && j.last_run_status === "Failed" && (
+                          <div style={{ fontSize: 11, color: "#f43f5e", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.last_run_message}</div>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+                        {j.last_run_seconds > 0 && <span style={{ fontSize: 12, color: "#4b5563" }}>{j.last_run_seconds}s</span>}
+                        <SevBadge level={j.last_run_status === "Failed" ? "critical" : j.last_run_status === "Succeeded" ? "healthy" : "unknown"} />
+                      </div>
+                    </div>
+                  ))}
+                  {(!jobs.jobs || jobs.jobs.length === 0) && (
+                    <div style={{ background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: 24, color: "#4b5563", fontSize: 13 }}>No agent jobs found</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!loading && snapshot && view === "databases" && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 16 }}>
+                  Databases · {dbs.database_count ?? 0} online
+                  {dbs.databases_missing_backup > 0 && <span style={{ color: "#f43f5e", marginLeft: 8 }}>· {dbs.databases_missing_backup} missing backups</span>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {(dbs.databases || []).map((db, i) => {
+                    const backupBad = !db.last_full_backup || db.hours_since_full_backup > 25;
+                    return (
+                      <div key={i} style={{
+                        background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: "16px 20px",
+                        display: "grid", gridTemplateColumns: "1fr auto auto auto", alignItems: "center", gap: 24,
+                        borderLeft: `3px solid ${backupBad ? "#f43f5e" : "#22d3a0"}`,
+                      }}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#e5e7eb", marginBottom: 3 }}>{db.database_name}</div>
+                          <div style={{ fontSize: 11, color: "#4b5563" }}>{db.recovery_model} · {db.state} · Log: {db.log_reuse_wait_desc}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 11, color: "#4b5563", marginBottom: 2 }}>Size</div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>{db.size_mb ? `${(db.size_mb/1024).toFixed(1)} GB` : "—"}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 11, color: "#4b5563", marginBottom: 2 }}>Last Full Backup</div>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: backupBad ? "#f43f5e" : "#9ca3af" }}>
+                            {db.last_full_backup ? `${db.hours_since_full_backup}h ago` : "Never"}
+                          </div>
+                        </div>
+                        <SevBadge level={backupBad ? "critical" : "healthy"} />
+                      </div>
+                    );
+                  })}
+                  {(!dbs.databases || dbs.databases.length === 0) && (
+                    <div style={{ background: "#111318", border: "1px solid #1e2028", borderRadius: 10, padding: 24, color: "#4b5563", fontSize: 13 }}>No user databases found</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div style={{ borderTop: "1px solid #1e2028", marginTop: 40, paddingTop: 20, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 12, color: "#2d3139" }}>
+                Built by <span style={{ color: "#8b5cf6", fontWeight: 600 }}>Firezer Demese</span> · Senior SQL Server DBA
+              </div>
+              <div style={{ fontSize: 12, color: "#2d3139" }}>
+                SQLGuardian v1.0 · {snapshot?.instance || "primary"} instance
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

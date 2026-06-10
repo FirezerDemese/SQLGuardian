@@ -1,0 +1,60 @@
+"""
+SQLGuardian - FastAPI Application
+REST API over the monitoring engine.
+"""
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
+from loguru import logger
+
+
+from core.logger import setup_logging
+from core.db_connection import initialize_from_settings, db_manager
+from core.scheduler import start_scheduler, stop_scheduler
+from api.routes import health, monitoring, instances, ai
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    setup_logging()
+    logger.info("SQLGuardian API starting up...")
+    initialize_from_settings()
+    start_scheduler()
+    yield
+    # Shutdown
+    stop_scheduler()
+    db_manager.dispose_all()
+    logger.info("SQLGuardian API shut down cleanly.")
+
+
+app = FastAPI(
+    title="SQLGuardian",
+    description="SQL Server Health Monitoring API - built by Firezer Demese",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # Tighten this in prod
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register route modules
+app.include_router(health.router, prefix="/health", tags=["Health"])
+app.include_router(monitoring.router, prefix="/monitoring", tags=["Monitoring"])
+app.include_router(instances.router, prefix="/instances", tags=["Instances"])
+app.include_router(ai.router, prefix="/ai", tags=["AI"])
+
+app.mount("/dashboard", StaticFiles(directory="dashboard", html=True), name="dashboard")
+@app.get("/", tags=["Root"])
+def root():
+    return {
+        "app": "SQLGuardian",
+        "version": "1.0.0",
+        "docs": "/docs",
+    }
