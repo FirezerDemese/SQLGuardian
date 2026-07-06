@@ -1,5 +1,14 @@
-FROM python:3.11-slim
+# --- Stage 1: Build the Vite+React dashboard ---
+FROM node:20-alpine AS dashboard-build
+WORKDIR /app/dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+# Produces /app/dashboard/dist
 
+# --- Stage 2: Python API with built dashboard as static files ---
+FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
@@ -23,8 +32,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY core/ ./core/
 COPY api/ ./api/
 COPY config/ ./config/
-COPY dashboard/ ./dashboard/
+COPY --from=dashboard-build /app/dashboard/dist ./dashboard/dist
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

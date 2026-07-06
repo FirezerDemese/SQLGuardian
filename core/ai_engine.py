@@ -105,8 +105,34 @@ def _build_remediation_prompt(snapshot: dict, issue_focus: Optional[str] = None)
 
     focus_text = f"\nFocus specifically on: {issue_focus}" if issue_focus else ""
 
-    return f"""Generate specific T-SQL remediation scripts for this SQL Server health snapshot.{focus_text}
+    blocking_policy = ""
+    if blocking.get("head_blocker_count", 0) > 0:
+        blocking_policy = """
+BLOCKING REMEDIATION POLICY (mandatory whenever blocking sessions are present):
+Do NOT default to KILL as the first or only suggestion. Order the "remediations"
+array as follows:
+1. DIAGNOSE FIRST - a script using DBCC INPUTBUFFER(<session_id>) to re-confirm
+   exactly what the head blocker is currently running (the current_sql snapshot
+   above may be stale by the time the DBA acts on it). risk_level "safe".
+2. IDENTIFY THE OWNER - a script against sys.dm_exec_sessions / sys.dm_exec_connections
+   returning login_name, host_name, program_name, and client_net_address for the
+   blocking session_id, so the DBA can contact that user or application team
+   before taking any destructive action. risk_level "safe".
+3. CONSIDER A NON-DESTRUCTIVE FIX - if this looks like a reader blocked on an
+   uncommitted writer (shared lock waiting on an exclusive lock), offer enabling
+   READ_COMMITTED_SNAPSHOT at the database level, or SET TRANSACTION ISOLATION
+   LEVEL READ UNCOMMITTED / WITH (NOLOCK) as a query-level option for the blocked
+   session. Explicitly state the tradeoff in the description: this permits dirty
+   reads of uncommitted data that may later roll back, so it's only appropriate
+   if the user understands and accepts that risk for this query. risk_level "medium".
+4. KILL AS LAST RESORT - only after the above, include KILL <session_id>,
+   risk_level "high", requires_approval true, and explain in the description
+   that it terminates in-flight work and forces a rollback which can itself
+   take time on large transactions.
+"""
 
+    return f"""Generate specific T-SQL remediation scripts for this SQL Server health snapshot.{focus_text}
+{blocking_policy}
 BLOCKING SESSIONS:
 {json.dumps(blocking.get("blocked_sessions", []), indent=2, default=str)}
 
@@ -145,12 +171,37 @@ Respond with ONLY this JSON structure (no markdown, no extra text):
 
 def _build_nl_query_prompt(question: str, snapshot: dict) -> str:
     """Build the prompt for natural language questions about the server."""
+    server = snapshot.get("server_health", {})
+    blocking = snapshot.get("blocking", {})
+    waits = snapshot.get("wait_stats", {})
+    jobs = snapshot.get("agent_jobs", {})
+    disk = snapshot.get("disk_usage", {})
+    databases = snapshot.get("database_status", {})
+
     return f"""A DBA is asking this question about their SQL Server: "{question}"
 
-Here is the current server health data:
-{json.dumps(snapshot, indent=2, default=str)[:4000]}
+OVERALL SEVERITY: {snapshot.get("overall_severity", "unknown").upper()}
+SNAPSHOT TIME: {snapshot.get("snapshot_time")}
 
-Answer their question directly based on this data. 
+SERVER HEALTH:
+{json.dumps({"cpu": server.get("cpu"), "memory": server.get("memory"), "uptime_hours": server.get("uptime_hours")}, indent=2, default=str)}
+
+BLOCKING:
+{json.dumps({"blocked_session_count": blocking.get("blocked_session_count"), "max_wait_seconds": blocking.get("max_wait_seconds"), "severity": blocking.get("severity"), "head_blockers": blocking.get("head_blockers", [])}, indent=2, default=str)}
+
+TOP WAIT STATS ({waits.get("mode", "cumulative")}):
+{json.dumps(waits.get("top_waits", [])[:8], indent=2, default=str)}
+
+AGENT JOBS:
+{json.dumps({"failed_count": jobs.get("failed_count"), "running_count": jobs.get("running_count"), "failed_jobs": jobs.get("failed_jobs", [])}, indent=2, default=str)}
+
+DISK USAGE:
+{json.dumps(disk.get("volumes", []), indent=2, default=str)}
+
+DATABASE STATUS & BACKUPS:
+{json.dumps(databases, indent=2, default=str)}
+
+Answer the DBA's question directly based on this data.
 Respond with ONLY this JSON structure:
 {{
   "answer": "Direct answer to their question",

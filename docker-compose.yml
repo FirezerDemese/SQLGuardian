@@ -45,21 +45,6 @@ services:
       - sqlguardian-net
     restart: unless-stopped
 
-  sqlguardian-dashboard:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.dashboard
-    container_name: sqlguardian-dashboard
-    environment:
-      API_BASE_URL: http://sqlguardian-api:8000
-    ports:
-      - "8501:8501"
-    depends_on:
-      - sqlguardian-api
-    networks:
-      - sqlguardian-net
-    restart: unless-stopped
-
 volumes:
   sqlserver_data:
 

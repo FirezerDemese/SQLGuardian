@@ -29,7 +29,7 @@ BEGIN TRANSACTION;
     PRINT 'Locks acquired on Sales.Orders, Sales.Invoices, Sales.Customers';
     PRINT 'Waiting 90 seconds - check SQLGuardian dashboard NOW';
 
-    WAITFOR DELAY '00:01:30';
+    WAITFOR DELAY '00:10:30';
 
 ROLLBACK TRANSACTION;
 PRINT 'Done - locks released';

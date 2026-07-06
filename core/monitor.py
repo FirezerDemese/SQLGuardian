@@ -14,7 +14,7 @@ Checks covered:
 - Failed logins (ring buffer)
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from loguru import logger
 
@@ -230,60 +230,118 @@ def get_blocking(instance_name: Optional[str] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3. Top Wait Stats
+# 3. Top Wait Stats (delta mode — shows what accumulated since last check)
 # ---------------------------------------------------------------------------
 
-WAIT_STATS_SQL = """
-WITH waits AS (
-    SELECT
-        wait_type,
-        wait_time_ms / 1000.0 AS wait_seconds,
-        (wait_time_ms - signal_wait_time_ms) / 1000.0 AS resource_wait_seconds,
-        signal_wait_time_ms / 1000.0 AS signal_wait_seconds,
-        waiting_tasks_count,
-        CASE WHEN waiting_tasks_count > 0
-             THEN (wait_time_ms / 1000.0) / waiting_tasks_count
-             ELSE 0 END AS avg_wait_seconds
-    FROM sys.dm_os_wait_stats
-    WHERE wait_type NOT IN (
-        -- Benign background waits to exclude
-        'SLEEP_TASK','SLEEP_SYSTEMTASK','SLEEP_DBSTARTUP','SLEEP_DCOMSTARTUP',
-        'SLEEP_MASTERDBREADY','SLEEP_MASTERMDREADY','SLEEP_MASTERUPGRADED',
-        'SLEEP_MSDBSTARTUP','SLEEP_TEMPDBSTARTUP','SLEEP_DBSTARTUP',
-        'WAITFOR','WAIT_XTP_OFFLINE_CKPT_NEW_LOG','DISPATCHER_QUEUE_SEMAPHORE',
-        'FT_IFTS_SCHEDULER_IDLE_WAIT','XE_DISPATCHER_WAIT','XE_TIMER_EVENT',
-        'BROKER_TO_FLUSH','BROKER_TASK_STOP','CLR_AUTO_EVENT',
-        'CLR_MANUAL_EVENT','DBMIRROR_EVENTS_QUEUE','SQLTRACE_BUFFER_FLUSH',
-        'BROKER_EVENTHANDLER','CHECKPOINT_QUEUE','DBMIRROR_WORKER_QUEUE',
-        'HADR_FILESTREAM_IOMGR_IOCOMPLETION','HADR_WORK_QUEUE',
-        'ONDEMAND_TASK_QUEUE','REQUEST_FOR_DEADLOCK_SEARCH','RESOURCE_QUEUE',
-        'SERVER_IDLE_CHECK','SLEEP_DCOMSTARTUP','SLEEP_MASTERDBREADY',
-        'SLEEP_MASTERMDREADY','SLEEP_MASTERUPGRADED','SLEEP_TEMPDBSTARTUP',
-        'SNI_HTTP_ACCEPT','SP_SERVER_DIAGNOSTICS_SLEEP','SQLTRACE_INCREMENTAL_FLUSH_SLEEP',
-        'WAIT_XTP_OFFLINE_CKPT_NEW_LOG','WAITFOR','XE_DISPATCHER_WAIT',
-        'XE_TIMER_EVENT','BROKER_TO_FLUSH','SLEEP_TASK'
-    )
-      AND wait_time_ms > 0
-)
-SELECT TOP 15
+# Per-instance baseline for delta computation: {instance_key: {"data": {wait_type: row}, "time": datetime}}
+_wait_baselines: dict = {}
+
+# Raw cumulative fetch — no TOP, no math. Delta computed in Python so we can
+# subtract the previous snapshot and show only what happened in the last interval.
+_WAIT_STATS_RAW_SQL = """
+SELECT
     wait_type,
-    ROUND(wait_seconds, 2) AS wait_seconds,
-    ROUND(resource_wait_seconds, 2) AS resource_wait_seconds,
-    ROUND(signal_wait_seconds, 2) AS signal_wait_seconds,
+    wait_time_ms,
     waiting_tasks_count,
-    ROUND(avg_wait_seconds, 4) AS avg_wait_seconds
-FROM waits
-ORDER BY wait_seconds DESC
+    signal_wait_time_ms
+FROM sys.dm_os_wait_stats
+WHERE wait_time_ms > 0
+  -- Whole noise FAMILIES excluded by prefix - these are SQL OS yielding for
+  -- OS calls / internal background loops, never a tuning target regardless
+  -- of which specific suffix shows up (e.g. PREEMPTIVE_OS_AUTHENTICATIONOPS,
+  -- PREEMPTIVE_OS_QUERYREGISTRY, PREEMPTIVE_OS_DEVICEOPS, etc. - an explicit
+  -- IN list can never keep up with all the suffixes SQL Server emits).
+  AND wait_type NOT LIKE 'PREEMPTIVE_%'
+  AND wait_type NOT LIKE 'SLEEP_%'
+  AND wait_type NOT LIKE 'XE_%'
+  AND wait_type NOT LIKE 'BROKER_%'
+  AND wait_type NOT LIKE 'DBMIRROR%'
+  AND wait_type NOT LIKE 'FT_%'
+  AND wait_type NOT LIKE 'QDS_%'
+  AND wait_type NOT LIKE 'CLR_%'
+  AND wait_type NOT LIKE 'SQLTRACE_%'
+  AND wait_type NOT LIKE 'REPL_%'
+  -- Named one-off benign waits not caught by a prefix above.
+  -- HADR_SYNC_COMMIT is deliberately NOT here - it indicates AG replica lag
+  -- and is one of the few HADR_ waits worth seeing.
+  AND wait_type NOT IN (
+    'SOS_WORK_DISPATCHER','DISPATCHER_QUEUE_SEMAPHORE','ONDEMAND_TASK_QUEUE',
+    'REQUEST_FOR_DEADLOCK_SEARCH','RESOURCE_QUEUE','SERVER_IDLE_CHECK',
+    'WAITFOR','LAZYWRITER_SLEEP','CHECKPOINT_QUEUE','DIRTY_PAGE_POLL',
+    'LOGMGR_QUEUE','PWAIT_DIRECTLOGCONSUMER_GETNEXT','PWAIT_EXTENSIBILITY_CLEANUP_TASK',
+    'HADR_LOGCAPTURE_WAIT','HADR_TIMER_TASK','HADR_NOTIFICATION_DEQUEUE',
+    'HADR_CLUSAPI_CALL','HADR_FILESTREAM_IOMGR_IOCOMPLETION','HADR_WORK_QUEUE',
+    'REDO_THREAD_PENDING_WORK','WAIT_XTP_OFFLINE_CKPT_NEW_LOG','WAIT_XTP_RECOVERY',
+    'WAIT_XTP_HOST_WAIT','SNI_HTTP_ACCEPT','SP_SERVER_DIAGNOSTICS_SLEEP',
+    'STARTUP_DEPENDENCY_MANAGER','MEMORY_ALLOCATION_EXT'
+  )
 """
 
 
 def get_wait_stats(instance_name: Optional[str] = None) -> dict:
-    """Return top 15 wait types, excluding benign background waits."""
+    """
+    Return top 15 actionable wait types using delta mode.
+    On the first call per instance, returns cumulative values (marked as such).
+    On subsequent calls, returns only what accumulated since the last snapshot —
+    this is what actually matters for real-time performance monitoring.
+    """
+    global _wait_baselines
+    instance_key = instance_name or "primary"
+
     try:
-        rows = db_manager.execute_query(WAIT_STATS_SQL, instance_name)
+        rows = db_manager.execute_query(_WAIT_STATS_RAW_SQL, instance_name)
+        current = {r["wait_type"]: r for r in rows}
+        now = datetime.now(timezone.utc)
+
+        baseline_entry = _wait_baselines.get(instance_key)
+
+        if baseline_entry:
+            prev = baseline_entry["data"]
+            elapsed_seconds = (now - baseline_entry["time"]).total_seconds()
+
+            deltas = []
+            for wt, curr_row in current.items():
+                prev_row = prev.get(wt, {"wait_time_ms": 0, "waiting_tasks_count": 0, "signal_wait_time_ms": 0})
+                delta_ms = max(0, curr_row["wait_time_ms"] - prev_row["wait_time_ms"])
+                delta_tasks = max(0, curr_row["waiting_tasks_count"] - prev_row["waiting_tasks_count"])
+                delta_signal_ms = max(0, curr_row["signal_wait_time_ms"] - prev_row.get("signal_wait_time_ms", 0))
+
+                if delta_ms > 0:
+                    deltas.append({
+                        "wait_type": wt,
+                        "wait_seconds": round(delta_ms / 1000.0, 2),
+                        "resource_wait_seconds": round((delta_ms - delta_signal_ms) / 1000.0, 2),
+                        "signal_wait_seconds": round(delta_signal_ms / 1000.0, 2),
+                        "waiting_tasks_count": delta_tasks,
+                        "avg_wait_seconds": round(delta_ms / 1000.0 / delta_tasks, 4) if delta_tasks > 0 else 0,
+                    })
+
+            deltas.sort(key=lambda x: x["wait_seconds"], reverse=True)
+            top_waits = deltas[:15]
+            mode = "delta"
+        else:
+            # First run — cumulative since last SQL Server restart, clearly labelled
+            top_waits = sorted([
+                {
+                    "wait_type": wt,
+                    "wait_seconds": round(r["wait_time_ms"] / 1000.0, 2),
+                    "resource_wait_seconds": round((r["wait_time_ms"] - r["signal_wait_time_ms"]) / 1000.0, 2),
+                    "signal_wait_seconds": round(r["signal_wait_time_ms"] / 1000.0, 2),
+                    "waiting_tasks_count": r["waiting_tasks_count"],
+                    "avg_wait_seconds": round(r["wait_time_ms"] / 1000.0 / r["waiting_tasks_count"], 4) if r["waiting_tasks_count"] > 0 else 0,
+                }
+                for wt, r in current.items()
+            ], key=lambda x: x["wait_seconds"], reverse=True)[:15]
+            elapsed_seconds = None
+            mode = "cumulative"
+
+        _wait_baselines[instance_key] = {"data": current, "time": now}
+
         return {
-            "collected_at": datetime.utcnow().isoformat(),
-            "top_waits": rows,
+            "collected_at": now.isoformat(),
+            "mode": mode,
+            "elapsed_seconds": round(elapsed_seconds, 1) if elapsed_seconds else None,
+            "top_waits": top_waits,
         }
     except Exception as e:
         logger.error(f"get_wait_stats failed: {e}")
