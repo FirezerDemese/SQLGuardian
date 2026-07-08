@@ -97,7 +97,7 @@ HEALTH_CHECK_INTERVAL_SECONDS=60
 ## Roadmap
 
 - [x] Phase 1 - Core monitoring engine + REST API + Docker
-- [ ] Phase 2 - Streamlit dashboard
+- [x] Phase 2 - Streamlit dashboard
 - [ ] Phase 3 - Azure wire-up (Azure SQL, Managed Instance)
 - [ ] Phase 4 - Alerting (Slack / email on severity flip)
 - [ ] Phase 5 - Historical trending (time series storage)
