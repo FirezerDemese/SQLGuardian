@@ -1,0 +1,43 @@
+PLATFORM DATA ENGINEERING - BACKUP AND LOG PROCEDURES
+=====================================================
+
+Owner: Platform Data Engineering
+Escalation: #db-oncall. Backup failures on a Tier 1 database go to the duty
+manager immediately, not after triage.
+Last reviewed: 2026-05-02
+
+
+1. DATABASE OUTSIDE THE BACKUP WINDOW
+-------------------------------------
+
+Conditions: BACKUP_AGE_EXCEEDED
+
+Tier 1 databases are WideWorldImporters and OrderPlatform. Their RPO is 15
+minutes and the full backup window is 24 hours.
+
+1. Check backupset before you believe the alert. Backups taken by the Availability Group secondary are recorded on that replica, not this one, and a database backed up on the secondary looks unprotected here.
+2. If backupset genuinely shows no full backup inside 24 hours, check whether the maintenance job is disabled or failing. Nine times out of ten the backup job is the real incident and the backup age is the symptom.
+3. Confirm free space on the backup volume before starting anything. We filled E: in March 2025 doing exactly this and turned a backup problem into an outage.
+4. Take a COPY_ONLY full backup to the backup share. COPY_ONLY so the differential base is not reset and the scheduled chain is unaffected.
+5. Record in the incident channel how long the database was unprotected. Risk and Compliance need the exposure window, not the fix.
+
+Rollback: a COPY_ONLY backup changes nothing about the existing chain. If the
+file is wrong, delete it.
+
+
+2. TRANSACTION LOG GROWING OR FULL
+----------------------------------
+
+Conditions: LOG_GROWTH
+
+1. Read log_reuse_wait_desc first. That single value names the cause and everything else in this section depends on it.
+2. If it is LOG_BACKUP, run a log backup. This is the normal case and usually means the log backup job stopped.
+3. If it is ACTIVE_TRANSACTION, find the oldest open transaction and its session. Do not take a log backup - it will not free anything while that transaction is open.
+4. If it is AVAILABILITY_REPLICA, the secondary is behind or disconnected. Escalate to the duty manager. The log will keep growing until the replica catches up and there is no local fix.
+5. If it is REPLICATION, the log reader agent is not running. Page the Integration team.
+6. Grow the log file deliberately if the volume has room, to buy time while the real cause is fixed.
+7. Do not shrink the log during the incident. Shrink after the cause is cleared and only during the Sunday maintenance window.
+
+Rollback: growing a log file is reversible during the maintenance window. A
+recovery model change is not a rollback and must never be used to clear a full
+log on a Tier 1 database - it breaks the log chain and our RPO commitment with it.

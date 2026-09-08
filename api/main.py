@@ -14,7 +14,7 @@ from loguru import logger
 from core.logger import setup_logging
 from core.db_connection import initialize_from_settings, db_manager
 from core.scheduler import start_scheduler, stop_scheduler
-from api.routes import health, monitoring, instances, ai
+from api.routes import health, monitoring, instances, ai, runbooks, incidents
 
 
 @asynccontextmanager
@@ -50,6 +50,8 @@ app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(monitoring.router, prefix="/monitoring", tags=["Monitoring"])
 app.include_router(instances.router, prefix="/instances", tags=["Instances"])
 app.include_router(ai.router, prefix="/ai", tags=["AI"])
+app.include_router(runbooks.router, prefix="/runbooks", tags=["Runbooks"])
+app.include_router(incidents.router, prefix="/incidents", tags=["Incident response"])
 
 DASHBOARD_DIST = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
 

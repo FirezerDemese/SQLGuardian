@@ -8,17 +8,12 @@ Groq-powered incident analysis. Takes raw DMV snapshot data and returns:
 This is the feature that makes SQLGuardian a portfolio piece for Mercor/Outlier.
 """
 
-import os
 import json
 from datetime import datetime
 from typing import Optional
 from loguru import logger
-import httpx
 
-
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+from core.llm import complete_json, model_id
 
 
 # ---------------------------------------------------------------------------
@@ -215,33 +210,11 @@ Respond with ONLY this JSON structure:
 # ---------------------------------------------------------------------------
 
 async def _call_groq(prompt: str, system: str = SYSTEM_PROMPT) -> dict:
-    """Call Groq API and return parsed JSON response."""
-    if not GROQ_API_KEY:
-        raise ValueError("GROQ_API_KEY not set in environment.")
+    """Call the narration model and return the parsed JSON response.
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 2048,
-        "response_format": {"type": "json_object"},
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(GROQ_API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
-
-    raw_content = data["choices"][0]["message"]["content"]
-    return json.loads(raw_content)
+    Transport, model id and empty-content handling all live in core/llm.py.
+    """
+    return await complete_json(prompt, system)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +231,7 @@ async def explain_snapshot(snapshot: dict) -> dict:
         prompt = _build_explain_prompt(snapshot)
         result = await _call_groq(prompt)
         result["generated_at"] = datetime.utcnow().isoformat()
-        result["model"] = GROQ_MODEL
+        result["model"] = model_id()
         logger.info(f"AI explanation complete | severity={result.get('severity_label')}")
         return result
     except Exception as e:
@@ -281,7 +254,7 @@ async def suggest_remediation(snapshot: dict, issue_focus: Optional[str] = None)
         prompt = _build_remediation_prompt(snapshot, issue_focus)
         result = await _call_groq(prompt)
         result["generated_at"] = datetime.utcnow().isoformat()
-        result["model"] = GROQ_MODEL
+        result["model"] = model_id()
         logger.info(f"AI remediation complete | scripts={len(result.get('remediations', []))}")
         return result
     except Exception as e:
@@ -304,7 +277,7 @@ async def answer_nl_question(question: str, snapshot: dict) -> dict:
         result = await _call_groq(prompt)
         result["question"] = question
         result["generated_at"] = datetime.utcnow().isoformat()
-        result["model"] = GROQ_MODEL
+        result["model"] = model_id()
         return result
     except Exception as e:
         logger.error(f"AI answer_nl_question failed: {e}")

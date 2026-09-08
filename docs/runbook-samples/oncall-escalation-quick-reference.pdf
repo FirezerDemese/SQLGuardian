@@ -1,0 +1,82 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Length 1322 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+56 760 Td
+(PLATFORM DATA ENGINEERING) Tj T*
+(ON-CALL ESCALATION QUICK REFERENCE) Tj T*
+() Tj T*
+(Last reviewed: 2026-07-02. Print this. It is the page you want at 03:00.) Tj T*
+() Tj T*
+(SEVERITY DEFINITIONS) Tj T*
+() Tj T*
+(P1  Service is down, or data loss is possible. Page the duty manager) Tj T*
+(    immediately. Do not triage first.) Tj T*
+(P2  Service is degraded for users, or a Tier 1 database is unprotected.) Tj T*
+(    Declare in #incident, then triage.) Tj T*
+(P3  Contained, no user impact yet. Handle in hours.) Tj T*
+() Tj T*
+(TIER 1 DATABASES) Tj T*
+() Tj T*
+(WideWorldImporters, OrderPlatform. RPO 15 minutes, RTO 1 hour.) Tj T*
+(Anything affecting recoverability of these two is a P2 minimum.) Tj T*
+() Tj T*
+(CONTACTS) Tj T*
+() Tj T*
+(Database on-call        #db-oncall) Tj T*
+(Duty manager            rota in the on-call calendar) Tj T*
+(Fulfilment on-call      #fulfilment-oncall \(OrderSync, WMS-Bridge\)) Tj T*
+(Integration team        #integration \(replication, log reader\)) Tj T*
+(Infrastructure          #infra-oncall \(SAN, storage extension, hypervisor\)) Tj T*
+() Tj T*
+(RULES THAT DO NOT CHANGE) Tj T*
+() Tj T*
+(No destructive action on a production instance without a second person) Tj T*
+(on the call. No exceptions during an incident, and no exceptions for) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 71 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+56 760 Td
+(anything that cannot be undone.) Tj T*
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000189 00000 n 
+0000001563 00000 n 
+0000001689 00000 n 
+0000001810 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1936
+%%EOF

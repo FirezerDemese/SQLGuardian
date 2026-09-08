@@ -41,12 +41,17 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./config:/app/config
+      # The ingested runbook corpus and the condition-firing log that the gap
+      # report is built from. Without this they are lost on every restart, and
+      # a gap report that resets is not evidence of anything.
+      - guardian_data:/app/data
     networks:
       - sqlguardian-net
     restart: unless-stopped
 
 volumes:
   sqlserver_data:
+  guardian_data:
 
 networks:
   sqlguardian-net:

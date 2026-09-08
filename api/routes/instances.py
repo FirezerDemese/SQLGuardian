@@ -5,7 +5,6 @@ Register, list, and test SQL Server instances at runtime.
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
 
 from core.db_connection import db_manager
 

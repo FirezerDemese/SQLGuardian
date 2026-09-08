@@ -176,6 +176,13 @@ WHERE r.blocking_session_id > 0
 ORDER BY r.wait_time DESC
 """
 
+# A head blocker very often has NO active request: the classic production case
+# is an application that opened a transaction and then went idle, so
+# sys.dm_exec_requests has nothing for it and only sys.dm_exec_connections still
+# remembers what it ran. Falling back to most_recent_sql_handle is the
+# difference between naming the offending statement and showing the DBA a blank.
+# is_idle / open_transaction_count are surfaced too, because "idle with an open
+# transaction" points at the application team, not at the database.
 HEAD_BLOCKERS_SQL = """
 SELECT
     s.session_id,
@@ -183,23 +190,41 @@ SELECT
     s.host_name,
     s.program_name,
     s.status,
+    s.open_transaction_count,
+    CASE WHEN r.session_id IS NULL THEN 1 ELSE 0 END AS is_idle,
+    DATEDIFF(SECOND, s.last_request_end_time, GETDATE()) AS idle_seconds,
     r.wait_type,
     r.cpu_time,
     r.reads,
     r.writes,
-    COUNT(*) OVER (PARTITION BY s.session_id) AS sessions_blocked,
-    SUBSTRING(qt.text, 1, 500) AS current_sql
+    (
+        SELECT COUNT(*)
+        FROM sys.dm_exec_requests blocked
+        WHERE blocked.blocking_session_id = s.session_id
+    ) AS sessions_blocked,
+    -- A session can block others while waiting on someone else: that is the
+    -- middle of a chain, not its head. The head is the one nobody is blocking.
+    CASE WHEN EXISTS (
+        SELECT 1 FROM sys.dm_exec_requests me
+        WHERE me.session_id = s.session_id AND me.blocking_session_id > 0
+    ) THEN 1 ELSE 0 END AS is_itself_blocked,
+    SUBSTRING(COALESCE(active_sql.text, last_sql.text), 1, 500) AS current_sql
 FROM sys.dm_exec_sessions s
 LEFT JOIN sys.dm_exec_requests r ON s.session_id = r.session_id
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) active_sql
 OUTER APPLY (
-    SELECT text FROM sys.dm_exec_sql_text(r.sql_handle)
-) qt
+    SELECT TOP 1 c.most_recent_sql_handle
+    FROM sys.dm_exec_connections c
+    WHERE c.session_id = s.session_id
+    ORDER BY c.connect_time DESC
+) conn
+OUTER APPLY sys.dm_exec_sql_text(conn.most_recent_sql_handle) last_sql
 WHERE s.session_id IN (
     SELECT blocking_session_id
     FROM sys.dm_exec_requests
     WHERE blocking_session_id > 0
 )
-ORDER BY sessions_blocked DESC
+ORDER BY is_itself_blocked ASC, sessions_blocked DESC
 """
 
 
@@ -285,7 +310,6 @@ def get_wait_stats(instance_name: Optional[str] = None) -> dict:
     On subsequent calls, returns only what accumulated since the last snapshot —
     this is what actually matters for real-time performance monitoring.
     """
-    global _wait_baselines
     instance_key = instance_name or "primary"
 
     try:
@@ -405,6 +429,10 @@ def get_long_running_queries(
 # 5. SQL Agent Jobs
 # ---------------------------------------------------------------------------
 
+# run_date and run_time are integers (yyyymmdd, hhmmss). They are converted
+# inline rather than with msdb.dbo.agent_datetime, because that helper needs
+# an EXECUTE grant that SQLAgentReaderRole does not include - one more
+# permission on the monitoring account purely to format a date.
 AGENT_JOBS_SQL = """
 SELECT
     j.name AS job_name,
@@ -417,7 +445,12 @@ SELECT
         WHEN 4 THEN 'Running'
         ELSE 'Unknown'
     END AS last_run_status,
-    msdb.dbo.agent_datetime(h.run_date, h.run_time) AS last_run_time,
+    CASE WHEN h.run_date > 0 THEN
+        CONVERT(DATETIME,
+            STUFF(STUFF(CONVERT(CHAR(8), h.run_date), 7, 0, '-'), 5, 0, '-') + ' ' +
+            STUFF(STUFF(RIGHT('000000' + CONVERT(VARCHAR(6), h.run_time), 6), 5, 0, ':'), 3, 0, ':')
+        )
+    END AS last_run_time,
     h.run_duration AS run_duration_hhmmss,
     h.message AS last_run_message,
     -- Convert HHMMSS integer to total seconds
@@ -475,22 +508,50 @@ def get_agent_jobs(instance_name: Optional[str] = None) -> dict:
 # 6. Disk / Volume Usage
 # ---------------------------------------------------------------------------
 
+# Grouped by volume_id rather than SELECT DISTINCT, because on Linux SQL Server
+# volume_mount_point, logical_volume_name and file_system_type are all NULL - a
+# DISTINCT on those columns collapses every volume into one indistinguishable
+# row. volume_id is populated on every platform, and MIN(physical_name) gives a
+# real path to fall back on for a human-readable label.
 DISK_USAGE_SQL = """
-SELECT DISTINCT
+SELECT
     vs.volume_mount_point,
     vs.file_system_type,
     vs.logical_volume_name,
-    ROUND(vs.total_bytes / 1073741824.0, 2) AS total_gb,
-    ROUND(vs.available_bytes / 1073741824.0, 2) AS available_gb,
-    ROUND((vs.total_bytes - vs.available_bytes) / 1073741824.0, 2) AS used_gb,
+    MIN(mf.physical_name) AS sample_file_path,
+    ROUND(MIN(vs.total_bytes) / 1073741824.0, 2) AS total_gb,
+    ROUND(MIN(vs.available_bytes) / 1073741824.0, 2) AS available_gb,
+    ROUND((MIN(vs.total_bytes) - MIN(vs.available_bytes)) / 1073741824.0, 2) AS used_gb,
     ROUND(
-        ((vs.total_bytes - vs.available_bytes) * 100.0) / vs.total_bytes,
+        ((MIN(vs.total_bytes) - MIN(vs.available_bytes)) * 100.0) / MIN(vs.total_bytes),
         1
     ) AS used_pct
 FROM sys.master_files mf
 CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) vs
+GROUP BY vs.volume_id, vs.volume_mount_point, vs.file_system_type, vs.logical_volume_name
 ORDER BY used_pct DESC
 """
+
+
+def _volume_label(row: dict) -> str:
+    """A name for a volume that is never None.
+
+    Windows gives a mount point ("E:\\"). Linux gives NULL for all three name
+    columns, so fall back to the directory holding the data files, which is what
+    an operator would actually recognise. Without this the UI reads "Disk
+    pressure on None" and the generated remediation filters on the literal
+    string 'None', which matches no volume at all.
+    """
+    for key in ("volume_mount_point", "logical_volume_name"):
+        value = row.get(key)
+        if value and str(value).strip():
+            return str(value)
+    path = row.get("sample_file_path")
+    if path:
+        text = str(path).replace("\\", "/")
+        directory = text.rsplit("/", 1)[0]
+        return directory or text
+    return "(unnamed volume)"
 
 
 def get_disk_usage(instance_name: Optional[str] = None) -> dict:
@@ -500,8 +561,9 @@ def get_disk_usage(instance_name: Optional[str] = None) -> dict:
 
         max_used_pct = max((r["used_pct"] for r in rows), default=0)
 
-        # Tag severity per volume
+        # Tag severity per volume, and give each one a name that is never None.
         for row in rows:
+            row["volume_label"] = _volume_label(row)
             row["severity"] = _severity(
                 row["used_pct"],
                 settings.disk_warning_pct,
@@ -557,10 +619,55 @@ ORDER BY size_mb DESC
 """
 
 
+LOG_SPACE_SQL = """
+SELECT
+    RTRIM(pc.instance_name) AS database_name,
+    MAX(CASE WHEN pc.counter_name LIKE 'Log File(s) Used Size (KB)%' THEN pc.cntr_value END) AS log_used_kb,
+    MAX(CASE WHEN pc.counter_name LIKE 'Log File(s) Size (KB)%'      THEN pc.cntr_value END) AS log_size_kb
+FROM sys.dm_os_performance_counters pc
+WHERE pc.object_name LIKE '%Databases%'
+  AND pc.counter_name LIKE 'Log File(s)%'
+  AND pc.instance_name NOT IN ('_Total', 'mssqlsystemresource')
+GROUP BY RTRIM(pc.instance_name)
+"""
+
+
+def get_log_space(instance_name: Optional[str] = None) -> dict:
+    """Transaction log used/allocated size per database.
+
+    Read from sys.dm_os_performance_counters rather than DBCC SQLPERF(LOGSPACE)
+    so it stays a single set-based read with no database context switching.
+    """
+    rows = db_manager.execute_query(LOG_SPACE_SQL, instance_name)
+    out = {}
+    for row in rows:
+        size_kb = row.get("log_size_kb") or 0
+        used_kb = row.get("log_used_kb") or 0
+        if size_kb:
+            out[row["database_name"]] = {
+                "log_size_mb": round(size_kb / 1024.0, 2),
+                "log_used_mb": round(used_kb / 1024.0, 2),
+                "log_used_pct": round((used_kb * 100.0) / size_kb, 1),
+            }
+    return out
+
+
 def get_database_status(instance_name: Optional[str] = None) -> dict:
-    """Return status, size, and backup health for all user databases."""
+    """Return status, size, backup health, and log space for all user databases."""
     try:
         rows = db_manager.execute_query(DATABASE_STATUS_SQL, instance_name)
+
+        # Merge in log space. A failure here must not blank out backup health,
+        # so it degrades to log_used_pct = None rather than erroring the check.
+        try:
+            log_space = get_log_space(instance_name)
+        except Exception as e:
+            logger.warning(f"get_log_space failed, continuing without log data: {e}")
+            log_space = {}
+        for row in rows:
+            row.update(log_space.get(row["database_name"], {
+                "log_size_mb": None, "log_used_mb": None, "log_used_pct": None,
+            }))
 
         no_recent_backup = [
             r for r in rows
@@ -600,10 +707,24 @@ def get_full_snapshot(instance_name: Optional[str] = None) -> dict:
         "database_status": get_database_status(instance_name),
     }
 
-    # Roll up overall severity
+    # A check that could not run is not a healthy check. Track those separately
+    # so the rollup can never report "healthy" for an instance we failed to
+    # reach - "I could not tell" and "nothing is wrong" are different answers,
+    # and only one of them is safe to act on.
+    failed = [
+        key for key in (
+            "server_health", "blocking", "wait_stats", "long_running_queries",
+            "agent_jobs", "disk_usage", "database_status",
+        )
+        if isinstance(snapshot.get(key), dict) and "error" in snapshot[key]
+    ]
+    snapshot["failed_checks"] = failed
+
     severities = []
     for key in ["server_health", "blocking", "disk_usage", "agent_jobs", "database_status"]:
         section = snapshot.get(key, {})
+        if "error" in section:
+            continue
         cpu_sev = section.get("cpu", {}).get("severity")
         mem_sev = section.get("memory", {}).get("severity")
         sev = section.get("severity") or cpu_sev or mem_sev
@@ -614,9 +735,14 @@ def get_full_snapshot(instance_name: Optional[str] = None) -> dict:
         overall = "critical"
     elif "warning" in severities:
         overall = "warning"
+    elif failed:
+        overall = "unknown"
     else:
         overall = "healthy"
 
     snapshot["overall_severity"] = overall
-    logger.info(f"Snapshot complete | overall_severity={overall}")
+    logger.info(
+        f"Snapshot complete | overall_severity={overall}"
+        + (f" | failed_checks={','.join(failed)}" if failed else "")
+    )
     return snapshot

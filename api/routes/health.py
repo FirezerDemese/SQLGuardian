@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from core.db_connection import db_manager
 from core.scheduler import get_cached_snapshot, get_cache_info
 from core.monitor import get_full_snapshot
+from core.llm import health as llm_probe
 
 router = APIRouter()
 
@@ -46,3 +47,15 @@ def snapshot(fresh: bool = False):
 def cache_info():
     """Return scheduler cache metadata."""
     return get_cache_info()
+
+
+@router.get("/llm")
+async def llm_health():
+    """Is the narration model configured and reachable?
+
+    Worth its own probe: a model provider retiring an id is a silent failure
+    everywhere else, and it should be visible before an incident rather than
+    during one. Reports render without narration, so this never gates
+    readiness.
+    """
+    return await llm_probe()

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Storage and Volume Procedures - Platform Data Engineering</title>
+  <meta name="confluence-space" content="PLATDATA">
+</head>
+<body>
+  <div id="main-content" class="wiki-content">
+
+    <h1>Storage and Volume Procedures</h1>
+    <p>Owner: Platform Data Engineering. Escalation: #db-oncall, then Infrastructure
+       for anything at the SAN or hypervisor layer. Last reviewed: 2026-07-21.</p>
+
+    <h2>Data or log volume above 80 percent</h2>
+    <!-- sqlguardian: DISK_PRESSURE -->
+    <p>Applies to all SQL Server volumes. E: is the data volume, L: is the log volume
+       and X: is the local backup staging area on every instance in the estate.</p>
+    <ol>
+      <li>Identify what is actually consuming the volume before requesting more space. Infrastructure will ask and we should already know.</li>
+      <li>If the volume is X:, check backup retention first. Staged backups older than 7 days are already copied to the vault and are the intended thing to remove.</li>
+      <li>Confirm the vault copy exists for anything you plan to delete. Check the vault catalogue, not the local file dates.</li>
+      <li>If the volume is L: and a single log file is the consumer, follow the transaction log procedure instead. Do not delete anything on L:.</li>
+      <li>Raise a storage extension request with Infrastructure using the standard template. Include the growth rate over the last 30 days.</li>
+      <li>Do not run DBCC SHRINKFILE against a data file to reclaim space during business hours. Shrink is single-threaded, fully logged, and leaves fragmentation we then have to rebuild.</li>
+    </ol>
+    <p>Rollback: a storage extension is not reversible without Infrastructure. File
+       deletion is not reversible at all - this is why the vault check is step 3 and
+       not step 5.</p>
+
+    <h2>SQL Agent job failed overnight</h2>
+    <!-- sqlguardian: AGENT_JOB_FAILURE -->
+    <p>The overnight schedule is: backups 22:00, warehouse load 23:30, index and
+       statistics maintenance 02:00 Sundays only.</p>
+    <ol>
+      <li>Read the failing step output, not the job-level summary. The job history summary almost never contains the actual error.</li>
+      <li>If the failed job is a backup job, treat it as a Tier 1 incident and follow the backup procedure. Do not simply re-run it.</li>
+      <li>If the warehouse load failed, check whether it failed on a lock timeout. If so it is a contention incident, and re-running it into the same contention will fail the same way.</li>
+      <li>Re-run the job only once the cause is understood, and only with the duty manager informed if it is outside its normal window.</li>
+      <li>If the job has now failed on three consecutive nights, raise a problem record. We do not keep re-running a job that is telling us something.</li>
+    </ol>
+    <p>Rollback: whatever the job did is done. sp_stop_job halts a run in progress but
+       does not undo completed steps.</p>
+
+  </div>
+</body>
+</html>
