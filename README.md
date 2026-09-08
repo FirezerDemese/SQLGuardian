@@ -218,10 +218,16 @@ cd dashboard
 VITE_DEMO=true VITE_BASE=/sqlguardian-demo/ npm run build   # -> dist/
 ```
 
-The hosted copy at
-[firezerdemese.github.io/sqlguardian-demo](https://firezerdemese.github.io/sqlguardian-demo/)
-is the previous build and does not yet include the Runbooks or Response views;
-redeploy `dist/` to update it.
+Build this from PowerShell or with `MSYS_NO_PATHCONV=1`. Git Bash rewrites a
+value beginning with `/` into a Windows path, so `VITE_BASE` becomes
+`/Program Files/Git/sqlguardian-demo/`, every asset URL in `index.html` carries
+that prefix, and the deployed page loads nothing and renders blank.
+
+Live: [firezerdemese.github.io/sqlguardian-demo](https://firezerdemese.github.io/sqlguardian-demo/)
+
+- [Runbooks](https://firezerdemese.github.io/sqlguardian-demo/#/runbooks) - corpus, condition coverage, gap report
+- [Response](https://firezerdemese.github.io/sqlguardian-demo/#/instance/primary/response) - conditions, citations, ordered actions
+- [Write-up](https://firezerdemese.github.io/sqlguardian-demo/#/instance/primary/report) - both documents from one evidence object
 
 ## Endpoints
 
